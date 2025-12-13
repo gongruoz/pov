@@ -2,32 +2,133 @@ import Foundation
 import UIKit
 import Combine
 
+// MARK: - LLM Modes
+
 enum LLMMode {
-    /// Object tag -> poetic noun
-    case textToText(tag: String, color: String)
-    /// Arbitrary prompt -> direct completion (used for poetry lines)
+    /// Image -> Plain description (Slow Stream: describe what's visible)
+    case imageToDescription(image: UIImage)
+    
+    /// Context -> 5 poetic word fragments ("pebbles")
+    case generatePebbles(context: PoeticSessionContext, currentObject: String?)
+    
+    /// Selected words + context -> Poem line
+    case generatePoem(context: PoeticSessionContext)
+    
+    /// Legacy: simple text prompt
     case textPrompt(prompt: String)
-    /// Vision
-    case imageToText(image: UIImage)
 }
+
+// MARK: - LLM Service
 
 class LLMService {
     
-    func generatePoeticWord(mode: LLMMode) -> AnyPublisher<String, Error> {
+    private let userLanguage = "English" // TODO: Make configurable
+    
+    // MARK: - Public API
+    
+    func generate(mode: LLMMode) -> AnyPublisher<String, Error> {
         switch mode {
-        case .textToText(let tag, _):
-            // Simple object-to-word prompt
-            let prompt = "基于「\(tag)」这个物体，写一个抽象的、诗意的名词。只返回一个词，不要解释，不要标点符号。"
-            return fetchQwenText(prompt: prompt)
+        case .imageToDescription(let image):
+            return generateImageDescription(image: image)
+            
+        case .generatePebbles(let context, let currentObject):
+            return generatePebbles(context: context, currentObject: currentObject)
+            
+        case .generatePoem(let context):
+            return generatePoemLine(context: context)
             
         case .textPrompt(let prompt):
-            // Use the prompt as-is (e.g., full poem instruction)
             return fetchQwenText(prompt: prompt)
-            
-        case .imageToText(let image):
-            let prompt = "用3个抽象的诗意形容词描述这张图片的氛围。用逗号分隔，不要解释。"
-            return fetchQwenVision(image: image, prompt: prompt)
         }
+    }
+    
+    // MARK: - Tier 1: Image to Plain Description
+    
+    /// Describe the image in plain detail, less than 30 words
+    private func generateImageDescription(image: UIImage) -> AnyPublisher<String, Error> {
+        let prompt = """
+        Describe this image in plain, objective detail. Focus on what is visible: objects, colors, lighting, spatial relationships.
+        Keep it under 30 words. No interpretation, no emotion, just observation.
+        Output in \(userLanguage).
+        """
+        
+        return fetchQwenVision(image: image, prompt: prompt)
+    }
+    
+    // MARK: - Tier 2: Generate Word Pebbles
+    
+    /// Generate 5 diverse "pebbles" - concrete words reaching into the deep world
+    private func generatePebbles(context: PoeticSessionContext, currentObject: String?) -> AnyPublisher<String, Error> {
+        let objectSequence = context.formatObjectSequence()
+        let visualDescription = context.latestVisualDescription ?? "unknown scene"
+        let selectionHistory = context.formatSelectionHistory()
+        
+        let prompt = """
+        [SYSTEM ROLE]
+        You are a poet of the "Objectivist" school, seeing with the eyes of Williams, Bishop, and Bashō.
+        You value "precision creating movement." Generate words that are "probes" reaching into the deep world.
+        
+        [CONTEXT]
+        - Objects detected in sequence: \(objectSequence)
+        - Current focus: \(currentObject ?? "ambient")
+        - Scene description: \(visualDescription)
+        - User has previously selected: \(selectionHistory.isEmpty ? "nothing yet" : selectionHistory)
+        
+        [TASK]
+        Offer exactly 5 "pebbles"—words or short phrases (1-3 words each).
+        
+        These pebbles must:
+        1. Be CONCRETE and SENSORY—the "thing itself," not abstractions like "soul" or "eternity"
+        2. Be DIVERSE—cover different emotional/semantic possibilities (some warm, some cold; some near, some far; some familiar, some strange)
+        3. Avoid clichés—seek the "wet black bough," the unexpected angle
+        4. NO adjectives of judgment (beautiful, ugly, wonderful)
+        5. Consider what this scene might mean in the collective unconscious—what associations does "\(currentObject ?? "this moment")" carry in art, literature, poetry?
+        
+        [OUTPUT FORMAT]
+        Return exactly 5 words/phrases, one per line.
+        Output in \(userLanguage).
+        No numbering, no explanation, just the pebbles.
+        """
+        
+        return fetchQwenText(prompt: prompt)
+    }
+    
+    // MARK: - Tier 3: Generate Poem Line
+    
+    /// Generate a poem line based on user-selected anchors and full context
+    private func generatePoemLine(context: PoeticSessionContext) -> AnyPublisher<String, Error> {
+        let anchors = context.activeAnchors.joined(separator: ", ")
+        let visualDescription = context.latestVisualDescription ?? ""
+        let poemHistory = context.formatPoemHistory()
+        let selectionPattern = context.formatSelectionHistory()
+        
+        let prompt = """
+        [GOAL]
+        You are an "unfurnished eye"—a portal for "Newness." Create a "constellation of surprise."
+        
+        [INPUT]
+        1. THE ANCHORS (user-selected objective correlatives): \(anchors)
+        2. THE CONTEXT (the weather of the moment): \(visualDescription)
+        3. THE HISTORY (the river we are floating on):
+        \(poemHistory.isEmpty ? "(this is the first line)" : poemHistory)
+        4. USER'S SELECTION PATTERN: \(selectionPattern)
+        
+        [THE CRAFT]
+        • JUXTAPOSE: Place the anchors side by side without explanation. Let the spark jump between them.
+          Example: "The white horse / in the autumn wind."
+        • THE WINDOW: Halfway through, shift the gaze. If looking in, look out. If at the small, look at the large.
+          Example: "Outside, the traffic, the laborers going home."
+        • THE REMAINDER: Leave something unresolved. A "residue" of uncertainty. Do not tie the package too tightly.
+        • TONE: "Cool" but "permeable." Like a "clean cage for invisible fish."
+        • CONTINUITY: If there are previous lines, this new line should feel like a natural continuation—the same river, different water.
+        
+        [OUTPUT]
+        A single line of poem in \(userLanguage).
+        It should feel like a "brief, buoyant verse form" that "unfastens the mind."
+        No quotes, no explanation, just the line.
+        """
+        
+        return fetchQwenText(prompt: prompt)
     }
     
     // MARK: - Qwen Text API (OpenAI Compatible)
@@ -52,7 +153,7 @@ class LLMService {
                     "content": prompt
                 ]
             ],
-            "max_tokens": 50,
+            "max_tokens": 200,
             "temperature": 0.9
         ]
         
@@ -63,7 +164,7 @@ class LLMService {
             return Fail(error: error).eraseToAnyPublisher()
         }
         
-        print("📤 LLM Request: '\(prompt)'")
+        print("📤 LLM Request: '\(prompt.prefix(100))...'")
         
         return URLSession.shared.dataTaskPublisher(for: request)
             .handleEvents(

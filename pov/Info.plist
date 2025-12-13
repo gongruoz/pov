@@ -2,15 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSCameraUsageDescription</key>
-	<string>AR requires camera access to convert the world into poetry.</string>
-	<key>NSMotionUsageDescription</key>
-	<string>Motion is used to detect when you are exploring or gazing at an object.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Save your poetic journey recordings to the photo library.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Save your poetic journey recordings to the photo library.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record audio along with your AR experience.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Handjet-Thin.ttf</string>
+		<string>Handjet-ExtraLight.ttf</string>
+		<string>Handjet-Light.ttf</string>
+		<string>Handjet-Regular.ttf</string>
+	</array>
 </dict>
 </plist>

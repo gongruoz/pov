@@ -5,30 +5,42 @@ struct PoetryOverlayView: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            // Historical lines (at the top, oldest first)
+            // --- Historical lines ---
             ForEach(Array(viewModel.poemLines.enumerated()), id: \.element.id) { index, line in
-                // Calculate opacity: older lines fade out more
                 let isLast = index == viewModel.poemLines.count - 1
-                let opacity = isLast ? 0.9 : 0.6
+                let opacity = isLast ? 0.9 : 0.7
+                // 历史诗句字号
+                let fontSize: CGFloat = 16
                 
                 Text(line.text)
-                    .font(.custom("PingFangSC-Light", size: 16))
+                    .font(.custom("Handjet-ExtraLight", size: fontSize))
+                    // 修改点 1：添加字间距
+                    .kerning(fontSize * 0.12)
                     .foregroundColor(.white.opacity(opacity))
+                    // 阴影保证可读性
+                    .shadow(color: .black.opacity(0.8), radius: 2, x: 0, y: 1)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             
-            // Current typing line (at the bottom, most prominent)
+            // --- Current typing line ---
             if !viewModel.currentTypingText.isEmpty || viewModel.isTyping {
                 HStack(spacing: 0) {
+                    // 当前打字诗句字号
+                    let typingFontSize: CGFloat = 20
+                    
                     Text(viewModel.currentTypingText)
-                        .font(.custom("PingFangSC-Regular", size: 18))
+                        .font(.custom("Handjet-Light", size: typingFontSize))
+                        // 修改点 2：添加 8% 的字间距
+                        .kerning(typingFontSize * 0.12)
                         .foregroundColor(.white)
+                        .shadow(color: .black.opacity(0.8), radius: 2, x: 0, y: 1)
                     
                     // Blinking cursor
                     if viewModel.isTyping {
                         Text("|")
-                            .font(.custom("PingFangSC-Regular", size: 18))
+                            .font(.custom("Handjet-Light", size: typingFontSize))
                             .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.8), radius: 2, x: 0, y: 1)
                             .opacity(cursorOpacity)
                             .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: cursorOpacity)
                     }
@@ -38,14 +50,7 @@ struct PoetryOverlayView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
-        .background(
-            // Subtle gradient background
-            LinearGradient(
-                colors: [Color.black.opacity(0.0), Color.black.opacity(0.4), Color.black.opacity(0.6)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
+        // 整体动画
         .animation(.easeInOut(duration: 0.3), value: viewModel.poemLines.count)
         .animation(.easeInOut(duration: 0.1), value: viewModel.currentTypingText)
     }
@@ -53,21 +58,20 @@ struct PoetryOverlayView: View {
     @State private var cursorOpacity: Double = 1.0
 }
 
-// Preview
+// Preview (保持不变，用于预览效果)
 struct PoetryOverlayView_Previews: PreviewProvider {
     static var previews: some View {
         ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
-            
+            Color.gray.edgesIgnoringSafeArea(.all)
             VStack {
                 Spacer()
                 PoetryOverlayView(viewModel: {
                     let vm = PoetryViewModel()
                     vm.poemLines = [
-                        PoemLine(text: "光影在沉默中流淌", timestamp: Date()),
-                        PoemLine(text: "记忆如尘埃般轻盈", timestamp: Date())
+                        PoemLine(text: "the universe is a verse", timestamp: Date()),
+                        PoemLine(text: "memories, light as dusts", timestamp: Date())
                     ]
-                    vm.currentTypingText = "时间在指尖消逝"
+                    vm.currentTypingText = "flowing away in a flick"
                     vm.isTyping = true
                     return vm
                 }())
@@ -76,4 +80,3 @@ struct PoetryOverlayView_Previews: PreviewProvider {
         }
     }
 }
-

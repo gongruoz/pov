@@ -5,67 +5,115 @@ struct PoemLine: Identifiable, Equatable {
     let id = UUID()
     let text: String
     let timestamp: Date
+    let triggerWord: String?
+    
+    init(text: String, timestamp: Date = Date(), triggerWord: String? = nil) {
+        self.text = text
+        self.timestamp = timestamp
+        self.triggerWord = triggerWord
+    }
 }
 
 class PoetryViewModel: ObservableObject {
-    // Captured words (selected by user)
-    @Published var capturedWords: [String] = []
+    // MARK: - Published State
     
-    // Generated poem lines
+    /// Generated poem lines
     @Published var poemLines: [PoemLine] = []
     
-    // Current line being typed (typewriter effect)
+    /// Current line being typed (typewriter effect)
     @Published var currentTypingText: String = ""
     @Published var isTyping: Bool = false
+    
+    /// Reference to the shared poetic context
+    weak var arManager: ARManager?
+    
+    // MARK: - Private State
     
     private let llmService = LLMService()
     private var cancellables = Set<AnyCancellable>()
     private var typingTimer: Timer?
     
-    // Called when user captures (selects) a word
+    // Debounce poem generation to avoid rapid-fire
+    private var lastPoemGenerationTime: Date?
+    private let poemGenerationCooldown: TimeInterval = 2.0
+    
+    // MARK: - Word Capture (Called by ARManager)
+    
+    /// Called when user captures (selects) a word
     func captureWord(_ word: String) {
-        guard !capturedWords.contains(word) else { return }
+        guard let arManager = arManager else {
+            print("⚠️ Poetry: ARManager not connected")
+            return
+        }
         
-        capturedWords.append(word)
-        print("📝 Poetry: Captured '\(word)', total: \(capturedWords.count)")
+        print("📝 Poetry: Captured '\(word)'")
         
-        // Generate a new poem line based on all captured words
-        generatePoemLine(focusWord: word)
+        // Check cooldown
+        if let lastTime = lastPoemGenerationTime,
+           Date().timeIntervalSince(lastTime) < poemGenerationCooldown {
+            print("⏳ Poetry: Cooldown active, skipping generation")
+            return
+        }
+        
+        // Generate poem line with full context
+        generatePoemLine(triggerWord: word, context: arManager.getCurrentContext())
     }
     
-    // Called when user uncaptures a word
+    /// Called when user uncaptures a word
     func uncaptureWord(_ word: String) {
-        capturedWords.removeAll { $0 == word }
-        print("📝 Poetry: Removed '\(word)', total: \(capturedWords.count)")
+        print("📝 Poetry: Released '\(word)'")
+        // We don't remove poem lines, they stay as part of the river
     }
     
-    private func generatePoemLine(focusWord: String) {
-        let context = capturedWords.joined(separator: ", ")
-        let prompt = "你是一位意识流诗人。基于这些词汇线索: \(context)。用新词 \(focusWord) 写一句简短的现代诗作为内心独白。要求: 一句话, 不超过15个字, 意象抽象, 有诗意。只返回诗句本身。"
+    // MARK: - Poem Generation
+    
+    private func generatePoemLine(triggerWord: String, context: PoeticSessionContext) {
+        lastPoemGenerationTime = Date()
         
-        print("🎭 Generating poem for: '\(focusWord)'")
+        // Prepare context with current poem lines
+        var fullContext = context
+        fullContext.poemLines = poemLines.map { $0.text }
         
-        // Use textPrompt to avoid double-wrapping the poem instruction
-        llmService.generatePoeticWord(mode: .textPrompt(prompt: prompt))
+        print("🎭 Generating poem...")
+        print("   Anchors: \(fullContext.activeAnchors)")
+        print("   Objects: \(fullContext.formatObjectSequence())")
+        print("   Visual: \(fullContext.latestVisualDescription ?? "none")")
+        print("   History: \(fullContext.formatSelectionHistory())")
+        
+        llmService.generate(mode: .generatePoem(context: fullContext))
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { completion in
                 if case .failure(let error) = completion {
                     print("❌ Poetry generation error: \(error)")
                 }
             }, receiveValue: { [weak self] line in
-                let cleanLine = line
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "\"", with: "")
-                    .replacingOccurrences(of: "\u{201C}", with: "")
-                    .replacingOccurrences(of: "\u{201D}", with: "")
+                guard let self = self else { return }
                 
+                let cleanLine = self.cleanPoemLine(line)
                 print("🎭 Generated: '\(cleanLine)'")
-                self?.addPoemLineWithTypewriter(cleanLine)
+                
+                // Show with typewriter effect
+                self.addPoemLineWithTypewriter(cleanLine, triggerWord: triggerWord)
+                
+                // Update ARManager's context
+                self.arManager?.addPoemLine(cleanLine)
             })
             .store(in: &cancellables)
     }
     
-    private func addPoemLineWithTypewriter(_ text: String) {
+    private func cleanPoemLine(_ line: String) -> String {
+        return line
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{201C}", with: "") // Left double quote
+            .replacingOccurrences(of: "\u{201D}", with: "") // Right double quote
+            .replacingOccurrences(of: "「", with: "")
+            .replacingOccurrences(of: "」", with: "")
+    }
+    
+    // MARK: - Typewriter Effect
+    
+    private func addPoemLineWithTypewriter(_ text: String, triggerWord: String?) {
         guard !text.isEmpty else { return }
         
         // Stop any existing typing
@@ -76,8 +124,8 @@ class PoetryViewModel: ObservableObject {
         let characters = Array(text)
         var index = 0
         
-        // Typewriter effect: one character every 100ms (slowed down from 50ms to reduce UI thrashing)
-        typingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+        // Typewriter: one character every 80ms
+        typingTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
             guard let self = self else {
                 timer.invalidate()
                 return
@@ -88,35 +136,36 @@ class PoetryViewModel: ObservableObject {
                 index += 1
             } else {
                 timer.invalidate()
-                self.isTyping = false
-                
-                // Add to poem lines
-                let newLine = PoemLine(text: text, timestamp: Date())
-                self.poemLines.append(newLine)
-                // Clear typing line immediately to avoid duplicate display
-                self.currentTypingText = ""
-                print("🖋️ Typing finished, added line: \(text)")
-                
-                // Keep only last 5 lines
-                if self.poemLines.count > 5 {
-                    self.poemLines.removeFirst()
-                }
-                
-                // Clear current typing after a delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    if !self.isTyping {
-                        self.currentTypingText = ""
-                    }
-                }
+                self.finishTyping(text: text, triggerWord: triggerWord)
             }
         }
     }
     
+    private func finishTyping(text: String, triggerWord: String?) {
+        isTyping = false
+        
+        // Add to poem lines
+        let newLine = PoemLine(text: text, timestamp: Date(), triggerWord: triggerWord)
+        poemLines.append(newLine)
+        
+        // Clear typing text
+        currentTypingText = ""
+        
+        print("🖋️ Line added: '\(text)'")
+        
+        // Keep only last 6 lines visible
+        if poemLines.count > 6 {
+            poemLines.removeFirst()
+        }
+    }
+    
+    // MARK: - Clear
+    
     func clearPoem() {
-        capturedWords.removeAll()
         poemLines.removeAll()
         currentTypingText = ""
         typingTimer?.invalidate()
         isTyping = false
+        lastPoemGenerationTime = nil
     }
 }

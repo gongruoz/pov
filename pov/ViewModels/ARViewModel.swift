@@ -12,19 +12,35 @@ class ARViewModel: ObservableObject {
     
     init() {
         print("🟡 [ARViewModel] init started")
+        
         self.arManager = ARManager()
         print("🟡 [ARViewModel] ARManager created")
+        
         self.poetryViewModel = PoetryViewModel()
         print("🟡 [ARViewModel] PoetryViewModel created")
+        
         self.recorderService = RecorderService()
         print("🟡 [ARViewModel] RecorderService created")
         
-        // Connect recorder with ARManager so it can receive frames and words
-        self.arManager.attachRecorder(self.recorderService)
-        // Provide poetry view model for video compositing (matches UI exactly)
-        self.recorderService.poetryViewModel = self.poetryViewModel
+        // Connect components
+        setupConnections()
+        setupBindings()
+        
+        print("🟡 [ARViewModel] init completed")
+    }
+    
+    private func setupConnections() {
+        // Connect recorder with ARManager for frame/audio capture
+        arManager.attachRecorder(recorderService)
+        
+        // Connect PoetryViewModel with ARManager for context access
+        poetryViewModel.arManager = arManager
+        
+        // Provide poetry view model for video compositing
+        recorderService.poetryViewModel = poetryViewModel
+        
         // Video saved callback -> show toast
-        self.recorderService.onVideoSaved = { [weak self] in
+        recorderService.onVideoSaved = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 withAnimation(.easeInOut(duration: 1.5)) {
@@ -37,9 +53,6 @@ class ARViewModel: ObservableObject {
                 }
             }
         }
-        
-        setupBindings()
-        print("🟡 [ARViewModel] init completed")
     }
     
     private func setupBindings() {
@@ -52,7 +65,13 @@ class ARViewModel: ObservableObject {
             self?.poetryViewModel.uncaptureWord(word)
         }
         
-        // CRITICAL: Forward ARManager's objectWillChange to ARViewModel
+        // Listen for context updates
+        arManager.onContextUpdated = { [weak self] context in
+            // Could trigger UI updates or logging here
+            print("📊 Context updated: \(context.recentObjects.count) objects, \(context.visualContexts.count) descriptions")
+        }
+        
+        // Forward ARManager's objectWillChange to ARViewModel
         // This ensures SwiftUI updates when floatingWords/keptWords change
         arManager.objectWillChange
             .receive(on: RunLoop.main)
@@ -61,7 +80,7 @@ class ARViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Also forward poetryViewModel changes
+        // Forward poetryViewModel changes
         poetryViewModel.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -69,7 +88,7 @@ class ARViewModel: ObservableObject {
             }
             .store(in: &cancellables)
         
-        // Also forward recorderService changes
+        // Forward recorderService changes
         recorderService.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in

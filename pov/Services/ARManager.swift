@@ -3,72 +3,75 @@ import SwiftUI
 import Combine
 import Vision
 
-struct FloatingWord: Identifiable {
-    let id = UUID()
-    let text: String
-    var position: CGPoint // Normalized coordinates (0-1)
-    var opacity: Double = 0.0 // Start invisible for fade in
-    var scale: Double = 0.5   // Start small
-    var createdAt: Date = Date()
-}
-
 class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-    // Camera Session
+    // MARK: - Camera Session
+    
     let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
     
-    // Preview Layer (to be added to view)
-    // We don't store the view here anymore, just the session/layer logic
+    // MARK: - Frame Processing State
     
-    // Frame processing state
-    private var isProcessing = false            // object->word pipeline
-    private var lastProcessedTime: TimeInterval = 0
-    private var isProcessingVision = false      // image->text pipeline
-    private var lastVisionTime: TimeInterval = 0
+    private var isProcessingFastStream = false      // CoreML object detection
+    private var lastFastStreamTime: TimeInterval = 0
+    private var isProcessingSlowStream = false      // Vision API description
+    private var lastSlowStreamTime: TimeInterval = 0
     
-    // ============================================================
-    // Word Management
-    // ============================================================
+    // MARK: - Poetic Context (The Heart of the System)
     
-    // All detected words (history log)
-    @Published var detectedWordsLog: [String] = []
+    /// Shared context that accumulates all sensory data
+    @Published var poeticContext = PoeticSessionContext()
     
-    // Active floating words on screen (2D)
+    // MARK: - Word Management
+    
+    /// Active floating words on screen (candidates for selection)
     @Published var floatingWords: [FloatingWord] = []
     
-    // Words selected/kept by user
+    /// Words selected/kept by user (anchors)
     @Published var keptWords: [FloatingWord] = []
     
-    // Word History for Cooldown
+    /// Word cooldown to prevent repetition
     private var wordCooldowns: [String: Date] = [:]
-    private let cooldownDuration: TimeInterval = 3.0
+    private let cooldownDuration: TimeInterval = 5.0
     
-    // Maximum floating words on screen
-    private let maxFloatingWords = 5
+    /// Maximum floating words on screen
+    private let maxFloatingWords = 8
     
-    // Dependencies
+    // MARK: - Dependencies
+    
     private let llmService = LLMService()
     private let coreMLService = CoreMLService()
     private var cancellables = Set<AnyCancellable>()
     weak var recorderService: RecorderService?
     
-    // Haptics
-    private let impactLight = UIImpactFeedbackGenerator(style: .light)
-    private let impactMedium = UIImpactFeedbackGenerator(style: .medium)
+    // MARK: - Haptics
     
-    // Callbacks for Poetry integration
+    private let impactLight = UIImpactFeedbackGenerator(style: .rigid)
+    
+    // MARK: - Callbacks
+    
     var onWordSelected: ((String) -> Void)?
     var onWordUnselected: ((String) -> Void)?
+    var onContextUpdated: ((PoeticSessionContext) -> Void)?
+    
+    // MARK: - Initialization
     
     override init() {
         super.init()
+        impactLight.prepare()
         setupCamera()
-        startTimer()
-        
-        // Test Gemini API connection on startup
-        testGeminiConnection()
+        startAnimationTimer()
+        testConnection()
     }
+    
+    func triggerHaptic() {
+        DispatchQueue.main.async { [weak self] in
+            self?.impactLight.impactOccurred(intensity: 1.0)
+            self?.impactLight.prepare()
+        }
+    }
+    
+    // MARK: - Camera Setup
     
     private func setupCamera() {
         captureSession.sessionPreset = .high
@@ -78,6 +81,7 @@ class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBuffe
             print("❌ Camera not available")
             return
         }
+        
         // Audio input
         let audioDevice = AVCaptureDevice.default(for: .audio)
         let audioInput = audioDevice.flatMap { try? AVCaptureDeviceInput(device: $0) }
@@ -91,7 +95,6 @@ class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBuffe
         
         if captureSession.canAddOutput(videoOutput) {
             captureSession.addOutput(videoOutput)
-            // Use a dedicated serial queue for frame processing to avoid blocking main thread
             let videoQueue = DispatchQueue(label: "videoQueue", qos: .userInteractive)
             videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
             if let connection = videoOutput.connection(with: .video),
@@ -116,40 +119,40 @@ class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBuffe
     func attachRecorder(_ recorder: RecorderService) {
         self.recorderService = recorder
         recorder.arManager = self
-        // Attach audio delegate if session already configured
         audioOutput.setSampleBufferDelegate(recorder, queue: DispatchQueue(label: "audioQueue"))
     }
     
-    private func startTimer() {
-        // Timer to update word animations/lifespan
+    // MARK: - Animation Timer
+    
+    private func startAnimationTimer() {
         Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-            self?.updateWords()
+            self?.updateFloatingWords()
         }
     }
     
-    private func updateWords() {
-        // Animation logic
+    private func updateFloatingWords() {
         let now = Date()
         var newFloatingWords: [FloatingWord] = []
         
         for var word in floatingWords {
             let age = now.timeIntervalSince(word.createdAt)
             
-            // Fade in
+            // Fade in (0 - 0.5s)
             if age < 0.5 {
                 word.opacity = age / 0.5
-                word.scale = 0.5 + (age / 0.5) * 0.5 // 0.5 -> 1.0
-            } else if age > AppConfig.floatingWordLifespan - 0.5 {
-                // Fade out
+                word.scale = 0.5 + (age / 0.5) * 0.5
+            }
+            // Fade out (last 0.5s of lifespan)
+            else if age > AppConfig.floatingWordLifespan - 0.5 {
                 let remaining = AppConfig.floatingWordLifespan - age
                 word.opacity = max(0, remaining / 0.5)
-            } else {
+            }
+            // Fully visible
+            else {
                 word.opacity = 1.0
                 word.scale = 1.0
             }
             
-            // Drift slightly
-            word.position.y -= 0.0005 // Float up
             
             if age < AppConfig.floatingWordLifespan {
                 newFloatingWords.append(word)
@@ -159,12 +162,12 @@ class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBuffe
         self.floatingWords = newFloatingWords
     }
     
-    // MARK: - Camera Delegate
+    // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         
-        // Forward video frames to recorder (only from videoOutput)
+        // Forward video frames to recorder
         if output === videoOutput {
             recorderService?.processVideoFrame(sampleBuffer)
         }
@@ -172,145 +175,278 @@ class ARManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBuffe
         let now = Date().timeIntervalSince1970
         
         // ----------------------------
-        // CoreML Object Detection: every 2 seconds
+        // FAST STREAM: CoreML Object Detection (every 2 seconds)
         // ----------------------------
-        if !isProcessing, now - lastProcessedTime > 2.0 {
-            isProcessing = true
-            lastProcessedTime = now
-            
-            // Process on background
-            performDetection(pixelBuffer: pixelBuffer)
+        if !isProcessingFastStream, now - lastFastStreamTime > AppConfig.fastStreamInterval {
+            isProcessingFastStream = true
+            lastFastStreamTime = now
+            processFastStream(pixelBuffer: pixelBuffer)
         }
         
         // ----------------------------
-        // Vision (imageToText): every 6 seconds
+        // SLOW STREAM: Vision API Description (every 6 seconds)
         // ----------------------------
-        if !isProcessingVision, now - lastVisionTime > 6.0 {
-            isProcessingVision = true
-            lastVisionTime = now
-            
-            // Process on background
-            performVisionAdjectives(pixelBuffer: pixelBuffer)
+        if !isProcessingSlowStream, now - lastSlowStreamTime > 6.0 {
+            isProcessingSlowStream = true
+            lastSlowStreamTime = now
+            processSlowStream(pixelBuffer: pixelBuffer)
         }
     }
     
-    // MARK: - Logic (Same as before)
+    // MARK: - Fast Stream: Object Detection → Pebbles
     
-    private func testGeminiConnection() {
-        // ... same logic
-        llmService.generatePoeticWord(mode: .textToText(tag: "test", color: "neutral"))
-            .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { _ in }, receiveValue: { word in
-                print("✅ Gemini API connected! Test response: '\(word)'")
-            })
-            .store(in: &cancellables)
-    }
-    
-    private func performDetection(pixelBuffer: CVPixelBuffer) {
+    private func processFastStream(pixelBuffer: CVPixelBuffer) {
         coreMLService.classify(image: pixelBuffer)
             .receive(on: DispatchQueue.main)
-            .flatMap { [weak self] tag -> AnyPublisher<String, Error> in
-                guard let self = self else { return Fail(error: URLError(.unknown)).eraseToAnyPublisher() }
-                return self.llmService.generatePoeticWord(mode: .textToText(tag: tag, color: "neutral"))
-            }
             .sink(receiveCompletion: { [weak self] _ in
-                self?.isProcessing = false
-            }, receiveValue: { [weak self] poeticWord in
-                self?.handleDetectedWord(poeticWord)
+                self?.isProcessingFastStream = false
+            }, receiveValue: { [weak self] detectedLabel in
+                guard let self = self else { return }
+                
+                // Record the object detection in context
+                let detection = ObjectDetection(
+                    label: detectedLabel,
+                    confidence: 1.0, // CoreML doesn't easily expose confidence here
+                    timestamp: Date()
+                )
+                self.poeticContext.objectSequence.append(detection)
+                
+                // Limit history size
+                if self.poeticContext.objectSequence.count > 50 {
+                    self.poeticContext.objectSequence.removeFirst()
+                }
+                
+                print("🔍 Fast Stream: '\(detectedLabel)' | Sequence: \(self.poeticContext.recentObjects)")
+                
+                // Generate 5 pebbles based on current context
+                self.generatePebbles(forObject: detectedLabel)
             })
             .store(in: &cancellables)
     }
     
-    private func performVisionAdjectives(pixelBuffer: CVPixelBuffer) {
-        // Create a copy or use CIImage directly to avoid buffer locking issues?
-        // Actually, creating CIImage is lightweight.
-        // We need to convert to UIImage for the API.
-        
+    // MARK: - Slow Stream: Visual Description
+    
+    private func processSlowStream(pixelBuffer: CVPixelBuffer) {
+        // Convert pixel buffer to UIImage
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext() // Create local context
+        let context = CIContext()
         guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            isProcessingVision = false
+            isProcessingSlowStream = false
             return
         }
         let uiImage = UIImage(cgImage: cgImage)
         
-        llmService.generatePoeticWord(mode: .imageToText(image: uiImage))
+        // Get plain description of the scene
+        llmService.generate(mode: .imageToDescription(image: uiImage))
             .receive(on: DispatchQueue.main)
             .sink(receiveCompletion: { [weak self] _ in
-                self?.isProcessingVision = false
-            }, receiveValue: { [weak self] words in
-                let parts = words.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                for word in parts {
-                    self?.handleDetectedWord(word)
+                self?.isProcessingSlowStream = false
+            }, receiveValue: { [weak self] description in
+                guard let self = self else { return }
+                
+                // Record the visual context
+                let visualContext = VisualContext(description: description)
+                self.poeticContext.visualContexts.append(visualContext)
+                
+                // Limit history size
+                if self.poeticContext.visualContexts.count > 20 {
+                    self.poeticContext.visualContexts.removeFirst()
+                }
+                
+                print("👁️ Slow Stream: '\(description)'")
+                
+                // Notify listeners
+                self.onContextUpdated?(self.poeticContext)
+            })
+            .store(in: &cancellables)
+    }
+    
+    // MARK: - Generate Pebbles (5 Word Options)
+    
+    private func generatePebbles(forObject currentObject: String) {
+        llmService.generate(mode: .generatePebbles(context: poeticContext, currentObject: currentObject))
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { completion in
+                if case .failure(let error) = completion {
+                    print("❌ Pebble generation error: \(error)")
+                }
+            }, receiveValue: { [weak self] pebblesText in
+                guard let self = self else { return }
+                
+                // Parse the 5 pebbles (one per line)
+                let pebbles = pebblesText
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .prefix(5)
+                
+                print("🪨 Pebbles received: \(pebbles)")
+                
+                for pebble in pebbles {
+                    self.spawnWordIfAllowed(pebble, sourceContext: currentObject)
                 }
             })
             .store(in: &cancellables)
     }
     
-    private func handleDetectedWord(_ word: String) {
-        let cleanWord = word
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .joined()
-            .lowercased()
-        
+    // MARK: - Word Spawning
+    
+    private func spawnWordIfAllowed(_ text: String, sourceContext: String?) {
+        let cleanWord = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanWord.isEmpty else { return }
         
-        detectedWordsLog.append(cleanWord)
-        
+        // Clean up expired cooldowns
         let now = Date()
         wordCooldowns = wordCooldowns.filter { $0.value > now }
         
+        // Check cooldown
         if wordCooldowns[cleanWord] != nil { return }
         
-        // Check duplication in floating words
-        if floatingWords.contains(where: { $0.text == cleanWord }) || keptWords.contains(where: { $0.text == cleanWord }) {
+        // Check duplication
+        if floatingWords.contains(where: { $0.text == cleanWord }) ||
+           keptWords.contains(where: { $0.text == cleanWord }) {
             return
         }
         
+        // Check capacity
         if floatingWords.count >= maxFloatingWords { return }
         
+        // Set cooldown
         wordCooldowns[cleanWord] = now.addingTimeInterval(cooldownDuration)
         
-        spawnWord(cleanWord)
-    }
-    
-    private func spawnWord(_ text: String) {
-        // Random position on screen (avoid edges)
-        // x: 0.1 - 0.9
-        // y: 0.2 - 0.6 (Keep upper/middle part, avoid bottom controls)
-        let x = Double.random(in: 0.2...0.8)
-        let y = Double.random(in: 0.3...0.6)
-        
-        let word = FloatingWord(text: text, position: CGPoint(x: x, y: y))
+        // Spawn with distributed positioning
+        let word = createFloatingWord(text: cleanWord, sourceContext: sourceContext)
         floatingWords.append(word)
-        print("🎯 Spawned: '\(text)' at \(x), \(y)")
+        
+        print("🎯 Spawned: '\(cleanWord)' from '\(sourceContext ?? "unknown")'")
     }
     
-    // MARK: - Interactions
+        
+    // 新增：碰撞检测位置生成器
+    private func getSafeRandomPosition() -> CGPoint {
+        let maxRetries = 20
+        // 设定最小间距 (屏幕宽度的 20% ~ 25%，根据你的字号大小调整)
+        // 调大这个数值可以让文字分得更开
+        let minDistance: CGFloat = 0.22
+        
+        for _ in 0..<maxRetries {
+            // 1. 生成随机坐标
+            // x: 0.1 ~ 0.9 (避开左右边缘)
+            // y: 0.15 ~ 0.75 (避开顶部和底部遮挡区，范围比之前更广，显得更松散)
+            let candidate = CGPoint(
+                x: CGFloat.random(in: 0.1...0.9),
+                y: CGFloat.random(in: 0.15...0.75)
+            )
+            
+            // 2. 检查与现有词的距离
+            var isSafe = true
+            for word in floatingWords {
+                let dx = candidate.x - word.position.x
+                let dy = candidate.y - word.position.y
+                let distance = sqrt(dx*dx + dy*dy)
+                
+                if distance < minDistance {
+                    isSafe = false
+                    break
+                }
+            }
+            
+            // 3. 同时也检查与 "Kept Words" (已选中词) 的距离，防止重叠
+            if isSafe {
+                for word in keptWords {
+                    let dx = candidate.x - word.position.x
+                    let dy = candidate.y - word.position.y
+                    let distance = sqrt(dx*dx + dy*dy)
+                    
+                    if distance < minDistance {
+                        isSafe = false
+                        break
+                    }
+                }
+            }
+            
+            if isSafe {
+                return candidate
+            }
+        }
+        
+        // 如果尝试多次都找不到位置（太挤了），就在允许范围内随机放一个
+        return CGPoint(
+            x: CGFloat.random(in: 0.1...0.9),
+            y: CGFloat.random(in: 0.2...0.7)
+        )
+    }
+
+    // 修改后的 createFloatingWord
+    private func createFloatingWord(text: String, sourceContext: String?) -> FloatingWord {
+        // 使用上面的安全位置生成器
+        let position = getSafeRandomPosition()
+        
+        return FloatingWord(
+            text: text,
+            position: position,
+            sourceContext: sourceContext
+        )
+    }
+    
+    // MARK: - User Interactions
     
     func toggleWordSelection(_ wordId: UUID) {
         if let index = floatingWords.firstIndex(where: { $0.id == wordId }) {
-            // Select: Move from floating to kept
+            // SELECT: Move from floating to kept
             let word = floatingWords[index]
             floatingWords.remove(at: index)
             keptWords.append(word)
             
-            impactMedium.impactOccurred()
+            // Record selection event in context
+            let event = SelectionEvent(word: word.text, action: .selected)
+            poeticContext.selectionHistory.append(event)
+            poeticContext.activeAnchors.append(word.text)
+            
+            print("✅ Selected: '\(word.text)' | History: \(poeticContext.formatSelectionHistory())")
+            
             onWordSelected?(word.text)
+            
         } else if let index = keptWords.firstIndex(where: { $0.id == wordId }) {
-            // Unselect: Remove or move back?
-            // "Tap to select and keep them"
-            // Usually tapping again might release it. Let's release it back to floating or just remove it.
-            // Let's release it back to floating for fun, or just delete it.
-            // Let's move back to floating to give it a chance to fade out.
+            // DESELECT: Move back to floating
             var word = keptWords[index]
-            word.createdAt = Date() // Reset timer so it fades out eventually
+            word.createdAt = Date().addingTimeInterval(-1.0) // Reset timer
             keptWords.remove(at: index)
             floatingWords.append(word)
             
-            impactLight.impactOccurred()
+            // Record deselection event
+            let event = SelectionEvent(word: word.text, action: .deselected)
+            poeticContext.selectionHistory.append(event)
+            poeticContext.activeAnchors.removeAll { $0 == word.text }
+            
+            print("❌ Deselected: '\(word.text)'")
+            
             onWordUnselected?(word.text)
         }
+    }
+    
+    // MARK: - Context Access
+    
+    func getCurrentContext() -> PoeticSessionContext {
+        return poeticContext
+    }
+    
+    func addPoemLine(_ line: String) {
+        poeticContext.poemLines.append(line)
+        // Keep only last 10 lines
+        if poeticContext.poemLines.count > 10 {
+            poeticContext.poemLines.removeFirst()
+        }
+    }
+    
+    // MARK: - Testing
+    
+    private func testConnection() {
+        llmService.generate(mode: .textPrompt(prompt: "Say 'connected' in one word"))
+            .receive(on: DispatchQueue.main)
+            .sink(receiveCompletion: { _ in }, receiveValue: { word in
+                print("✅ LLM API connected! Response: '\(word)'")
+            })
+            .store(in: &cancellables)
     }
 }

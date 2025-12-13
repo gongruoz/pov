@@ -416,8 +416,11 @@
 				INFOPLIST_FILE = pov/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "poem of view";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSCameraUsageDescription = "\"The AR feature requires camera access.\"";
-				INFOPLIST_KEY_NSMotionUsageDescription = "\"Motion is required for generating texts.\"";
+				INFOPLIST_KEY_NSCameraUsageDescription = "AR requires camera access to convert the world into poetry.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record audio along with your AR experience.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Motion is used to detect when you are exploring or gazing at an object.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your poetic journey recordings to the photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Save your poetic journey recordings to the photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiredDeviceCapabilities = arkit;
@@ -451,8 +454,11 @@
 				INFOPLIST_FILE = pov/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "poem of view";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSCameraUsageDescription = "\"The AR feature requires camera access.\"";
-				INFOPLIST_KEY_NSMotionUsageDescription = "\"Motion is required for generating texts.\"";
+				INFOPLIST_KEY_NSCameraUsageDescription = "AR requires camera access to convert the world into poetry.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Record audio along with your AR experience.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "Motion is used to detect when you are exploring or gazing at an object.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your poetic journey recordings to the photo library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Save your poetic journey recordings to the photo library.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIRequiredDeviceCapabilities = arkit;
