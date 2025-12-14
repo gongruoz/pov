@@ -2,19 +2,23 @@ import Foundation
 import UIKit
 import Combine
 
+// MARK: - Vision Essence Response (JSON)
+
+struct VisionEssenceResponse: Codable {
+    let reflection: String
+    let pebbles: [String]
+}
+
 // MARK: - LLM Modes
 
 enum LLMMode {
-    /// Image -> Plain description (Slow Stream: describe what's visible)
-    case imageToDescription(image: UIImage)
+    /// New Architecture: Image -> Reflection + 8 Pebbles (JSON)
+    case visionEssence(image: UIImage)
     
-    /// Context -> 5 poetic word fragments ("pebbles")
-    case generatePebbles(context: PoeticSessionContext, currentObject: String?)
-    
-    /// Selected words + context -> Poem line
+    /// Context + Selected Words -> Poem line (12 words max)
     case generatePoem(context: PoeticSessionContext)
     
-    /// Legacy: simple text prompt
+    /// Utility: simple text prompt
     case textPrompt(prompt: String)
 }
 
@@ -26,116 +30,135 @@ class LLMService {
     
     // MARK: - Public API
     
-    func generate(mode: LLMMode) -> AnyPublisher<String, Error> {
+    func generate(mode: LLMMode) -> AnyPublisher<Any, Error> {
         switch mode {
-        case .imageToDescription(let image):
-            return generateImageDescription(image: image)
-            
-        case .generatePebbles(let context, let currentObject):
-            return generatePebbles(context: context, currentObject: currentObject)
+        case .visionEssence(let image):
+            return generateVisionEssence(image: image)
+                .map { $0 as Any }
+                .eraseToAnyPublisher()
             
         case .generatePoem(let context):
             return generatePoemLine(context: context)
+                .map { $0 as Any }
+                .eraseToAnyPublisher()
             
         case .textPrompt(let prompt):
             return fetchQwenText(prompt: prompt)
+                .map { $0 as Any }
+                .eraseToAnyPublisher()
         }
     }
     
-    // MARK: - Tier 1: Image to Plain Description
-    
-    /// Describe the image in plain detail, less than 30 words
-    private func generateImageDescription(image: UIImage) -> AnyPublisher<String, Error> {
+    func generateVisionEssence(image: UIImage) -> AnyPublisher<VisionEssenceResponse, Error> {
         let prompt = """
-        Describe this image in plain, objective detail. Focus on what is visible: objects, colors, lighting, spatial relationships.
-        Keep it under 30 words. No interpretation, no emotion, just observation.
-        Output in \(userLanguage).
+        [ROLE]
+        You are a whimsical poet-philosopher exploring the collective unconscious. You possess an "unfurnished eye"—seeing the raw essence of reality.
+
+        [TASK]
+        1. SEE: Look at this image. Non-literally translate what you see into subjective, spiritual, or archetypal meanings. Feel the philosophical tension and symbolism.
+        2. REFLECT: Write a "poem of view" (internal monologue) in less than 50 words. Personal, intimate, sensorial.
+        3. DISTILL: Condense that reflection into exactly 8 "pebbles"—simple, everyday, sensorial, archetypal, direct phrases (1-3 words each).
+
+        [CONSTRAINTS]
+        - The pebbles must be surprising yet rooted in the image.
+        - Avoid abstract words like "eternity" or "love". Use concrete words like "rust", "wet glass", "bent spoon".
+        - Output ONLY raw JSON. No markdown, no explanations.
+
+        [OUTPUT FORMAT]
+        {
+          "reflection": "your internal monologue here...",
+          "pebbles": ["phrase 1", "phrase 2", "phrase 3", "phrase 4", "phrase 5", "phrase 6", "phrase 7", "phrase 8"]
+        }
         """
         
         return fetchQwenVision(image: image, prompt: prompt)
+            .tryMap { [weak self] raw -> VisionEssenceResponse in
+                guard let self = self else { throw URLError(.cannotDecodeRawData) }
+                
+                let cleaned = self.cleanJSONString(raw)
+                guard let data = cleaned.data(using: .utf8) else {
+                    throw URLError(.cannotDecodeRawData)
+                }
+                
+                let decoded = try JSONDecoder().decode(VisionEssenceResponse.self, from: data)
+                
+                let cleanPebbles = decoded.pebbles
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                
+                return VisionEssenceResponse(
+                    reflection: decoded.reflection.trimmingCharacters(in: .whitespacesAndNewlines),
+                    pebbles: Array(cleanPebbles.prefix(8))
+                )
+            }
+            .eraseToAnyPublisher()
     }
     
-    // MARK: - Tier 2: Generate Word Pebbles
+    // MARK: - Poem Generation
     
-    /// Generate 5 diverse "pebbles" - concrete words reaching into the deep world
-    private func generatePebbles(context: PoeticSessionContext, currentObject: String?) -> AnyPublisher<String, Error> {
-        let objectSequence = context.formatObjectSequence()
-        let visualDescription = context.latestVisualDescription ?? "unknown scene"
-        let selectionHistory = context.formatSelectionHistory()
-        
-        let prompt = """
-        [SYSTEM ROLE]
-        You are a poet of the "Objectivist" school, seeing with the eyes of Williams, Bishop, and Bashō.
-        You value "precision creating movement." Generate words that are "probes" reaching into the deep world.
-        
-        [CONTEXT]
-        - Objects detected in sequence: \(objectSequence)
-        - Current focus: \(currentObject ?? "ambient")
-        - Scene description: \(visualDescription)
-        - User has previously selected: \(selectionHistory.isEmpty ? "nothing yet" : selectionHistory)
-        
-        [TASK]
-        Offer exactly 5 "pebbles"—words or short phrases (1-3 words each).
-        
-        These pebbles must:
-        1. Be CONCRETE and SENSORY—the "thing itself," not abstractions like "soul" or "eternity"
-        2. Be DIVERSE—cover different emotional/semantic possibilities (some warm, some cold; some near, some far; some familiar, some strange)
-        3. Avoid clichés—seek the "wet black bough," the unexpected angle
-        4. NO adjectives of judgment (beautiful, ugly, wonderful)
-        5. Consider what this scene might mean in the collective unconscious—what associations does "\(currentObject ?? "this moment")" carry in art, literature, poetry?
-        
-        [OUTPUT FORMAT]
-        Return exactly 5 words/phrases, one per line.
-        Output in \(userLanguage).
-        No numbering, no explanation, just the pebbles.
-        """
-        
-        return fetchQwenText(prompt: prompt)
-    }
-    
-    // MARK: - Tier 3: Generate Poem Line
-    
-    /// Generate a poem line based on user-selected anchors and full context
     private func generatePoemLine(context: PoeticSessionContext) -> AnyPublisher<String, Error> {
         let anchors = context.activeAnchors.joined(separator: ", ")
-        let visualDescription = context.latestVisualDescription ?? ""
-        let poemHistory = context.formatPoemHistory()
-        let selectionPattern = context.formatSelectionHistory()
+        let previousLines = context.formatPoemHistory()
+        let isFirstLine = context.poemLines.isEmpty
         
-        let prompt = """
-        [GOAL]
-        You are an "unfurnished eye"—a portal for "Newness." Create a "constellation of surprise."
+        let prompt: String
         
-        [INPUT]
-        1. THE ANCHORS (user-selected objective correlatives): \(anchors)
-        2. THE CONTEXT (the weather of the moment): \(visualDescription)
-        3. THE HISTORY (the river we are floating on):
-        \(poemHistory.isEmpty ? "(this is the first line)" : poemHistory)
-        4. USER'S SELECTION PATTERN: \(selectionPattern)
-        
-        [THE CRAFT]
-        • JUXTAPOSE: Place the anchors side by side without explanation. Let the spark jump between them.
-          Example: "The white horse / in the autumn wind."
-        • THE WINDOW: Halfway through, shift the gaze. If looking in, look out. If at the small, look at the large.
-          Example: "Outside, the traffic, the laborers going home."
-        • THE REMAINDER: Leave something unresolved. A "residue" of uncertainty. Do not tie the package too tightly.
-        • TONE: "Cool" but "permeable." Like a "clean cage for invisible fish."
-        • CONTINUITY: If there are previous lines, this new line should feel like a natural continuation—the same river, different water.
-        
-        [OUTPUT]
-        A single line of poem in \(userLanguage).
-        It should feel like a "brief, buoyant verse form" that "unfastens the mind."
-        No quotes, no explanation, just the line.
-        """
+        if isFirstLine {
+            prompt = """
+            [GOAL]
+            Write the first line of a poem.
+            
+            [INPUT]
+            - Inspiration: \(anchors)
+            
+            [INSTRUCTION]
+            Write a poetic line. MAXIMUM 7 WORDS. Count carefully.
+            Inspired by the input words.
+            Style: Personal, intimate, sensorial.
+            
+            [FORBIDDEN]
+            - No dashes (—, -, –)
+            - No quotes
+            - No explanations
+            - No more than 7 words
+            
+            Output ONLY the line.
+            """
+        } else {
+            prompt = """
+            [GOAL]
+            Write a new line in this poem.
+            
+            [CONTEXT]
+            Previous lines:
+            \(previousLines)
+            
+            [INPUT]
+            - Inspiration: \(anchors)
+            
+            [INSTRUCTION]
+            Write ONE new line. MAXIMUM 7 WORDS. Count carefully.
+            Inspired by the input words.
+            Style: Personal, intimate, sensorial, whimsical.
+            Maintain the rhythm.
+            
+            [FORBIDDEN]
+            - No dashes (—, -, –)
+            - No quotes
+            - No explanations
+            - No more than 7 words
+            
+            Output ONLY the line.
+            """
+        }
         
         return fetchQwenText(prompt: prompt)
     }
     
-    // MARK: - Qwen Text API (OpenAI Compatible)
+    // MARK: - Qwen Text API
     
     private func fetchQwenText(prompt: String) -> AnyPublisher<String, Error> {
         guard let url = URL(string: AppConfig.apiBaseURL) else {
-            print("❌ LLM: Invalid URL")
             return Fail(error: URLError(.badURL)).eraseToAnyPublisher()
         }
         
@@ -148,53 +171,35 @@ class LLMService {
         let body: [String: Any] = [
             "model": AppConfig.modelName,
             "messages": [
-                [
-                    "role": "user",
-                    "content": prompt
-                ]
+                ["role": "user", "content": prompt]
             ],
-            "max_tokens": 200,
+            "max_tokens": 100,
             "temperature": 0.9
         ]
         
-        do {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        } catch {
-            print("❌ LLM: JSON serialization failed")
-            return Fail(error: error).eraseToAnyPublisher()
-        }
-        
-        print("📤 LLM Request: '\(prompt.prefix(100))...'")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
         return URLSession.shared.dataTaskPublisher(for: request)
-            .handleEvents(
-                receiveOutput: { data, response in
-                    if let httpResponse = response as? HTTPURLResponse {
-                        print("📥 LLM Response Status: \(httpResponse.statusCode)")
-                    }
-                    if let jsonString = String(data: data, encoding: .utf8) {
-                        print("📥 LLM Raw Response: \(jsonString.prefix(300))...")
-                    }
-                },
-                receiveCompletion: { completion in
-                    if case .failure(let error) = completion {
-                        print("❌ LLM Network Error: \(error.localizedDescription)")
-                    }
-                }
-            )
             .map { $0.data }
             .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
-            .map { response in
-                let text = response.choices?.first?.message?.content?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "void"
-                print("✅ LLM Parsed: '\(text)'")
-                return text
+            .map { $0.choices?.first?.message?.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "..." }
+            .map { text in
+                // Clean up: remove slashes, dashes, and limit length
+                var clean = text
+                    .replacingOccurrences(of: "/", with: ",")
+                    .replacingOccurrences(of: "—", with: " ")
+                    .replacingOccurrences(of: "–", with: " ")
+                    .replacingOccurrences(of: " - ", with: " ")
+                    .replacingOccurrences(of: "  ", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                // Truncate to ~7 words if too long
+                let words = clean.split(separator: " ")
+                if words.count > 9 {
+                    clean = words.prefix(7).joined(separator: " ")
+                }
+                return clean
             }
-            .catch { error -> Just<String> in
-                print("❌ LLM Parse Error: \(error)")
-                return Just("echo")
-            }
-            .setFailureType(to: Error.self)
             .eraseToAnyPublisher()
     }
     
@@ -205,7 +210,6 @@ class LLMService {
             return Fail(error: URLError(.badURL)).eraseToAnyPublisher()
         }
         
-        // Resize and compress image
         let resizedImage = resizeImage(image, maxSize: 512)
         let base64String = resizedImage.jpegData(compressionQuality: 0.6)?.base64EncodedString() ?? ""
         
@@ -213,56 +217,32 @@ class LLMService {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.addValue("Bearer \(AppConfig.apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 20.0
+        request.timeoutInterval = 25.0
         
-        // OpenAI Vision format
         let body: [String: Any] = [
             "model": AppConfig.modelName,
             "messages": [
                 [
                     "role": "user",
                     "content": [
-                        [
-                            "type": "text",
-                            "text": prompt
-                        ],
-                        [
-                            "type": "image_url",
-                            "image_url": [
-                                "url": "data:image/jpeg;base64,\(base64String)"
-                            ]
-                        ]
+                        ["type": "text", "text": prompt],
+                        ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64String)"]]
                     ]
                 ]
             ],
-            "max_tokens": 100
+            "max_tokens": 300
         ]
         
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
-        print("📤 LLM Vision Request...")
-        
         return URLSession.shared.dataTaskPublisher(for: request)
-            .handleEvents(
-                receiveOutput: { data, response in
-                    if let httpResponse = response as? HTTPURLResponse {
-                        print("📥 LLM Vision Response Status: \(httpResponse.statusCode)")
-                    }
-                }
-            )
             .map { $0.data }
             .decode(type: OpenAIResponse.self, decoder: JSONDecoder())
-            .map { response in
-                return response.choices?.first?.message?.content?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "silence"
-            }
-            .catch { error -> Just<String> in
-                print("❌ LLM Vision Error: \(error)")
-                return Just("shadow")
-            }
-            .setFailureType(to: Error.self)
+            .map { $0.choices?.first?.message?.content ?? "" }
             .eraseToAnyPublisher()
     }
+    
+    // MARK: - Helpers
     
     private func resizeImage(_ image: UIImage, maxSize: CGFloat) -> UIImage {
         let size = image.size
@@ -276,9 +256,23 @@ class LLMService {
         UIGraphicsEndImageContext()
         return resized
     }
+    
+    private func cleanJSONString(_ input: String) -> String {
+        var json = input
+        json = json.replacingOccurrences(of: "```json", with: "")
+        json = json.replacingOccurrences(of: "```JSON", with: "")
+        json = json.replacingOccurrences(of: "```", with: "")
+        
+        if let startIndex = json.firstIndex(of: "{"),
+           let endIndex = json.lastIndex(of: "}") {
+            json = String(json[startIndex...endIndex])
+        }
+        
+        return json.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
-// MARK: - OpenAI Compatible Response Models
+// MARK: - OpenAI Response Models
 
 struct OpenAIResponse: Codable {
     let id: String?

@@ -6,166 +6,125 @@ struct PoemLine: Identifiable, Equatable {
     let text: String
     let timestamp: Date
     let triggerWord: String?
-    
-    init(text: String, timestamp: Date = Date(), triggerWord: String? = nil) {
-        self.text = text
-        self.timestamp = timestamp
-        self.triggerWord = triggerWord
-    }
 }
 
 class PoetryViewModel: ObservableObject {
-    // MARK: - Published State
-    
-    /// Generated poem lines
     @Published var poemLines: [PoemLine] = []
-    
-    /// Current line being typed (typewriter effect)
     @Published var currentTypingText: String = ""
     @Published var isTyping: Bool = false
-    
-    /// Reference to the shared poetic context
+    @Published var justCompletedText: String = "" // Line that just finished typing, stays until next starts
     weak var arManager: ARManager?
-    
-    // MARK: - Private State
     
     private let llmService = LLMService()
     private var cancellables = Set<AnyCancellable>()
     private var typingTimer: Timer?
     
-    // Debounce poem generation to avoid rapid-fire
-    private var lastPoemGenerationTime: Date?
-    private let poemGenerationCooldown: TimeInterval = 2.0
+    // Buffering & Debouncing
+    private var selectedWordBuffer: [String] = []
+    private var debounceTimer: Timer?
+    private var isGenerating = false
     
-    // MARK: - Word Capture (Called by ARManager)
+    // Config
+    private let debounceInterval: TimeInterval = 3.0
     
-    /// Called when user captures (selects) a word
     func captureWord(_ word: String) {
-        guard let arManager = arManager else {
-            print("⚠️ Poetry: ARManager not connected")
-            return
-        }
-        
-        print("📝 Poetry: Captured '\(word)'")
-        
-        // Check cooldown
-        if let lastTime = lastPoemGenerationTime,
-           Date().timeIntervalSince(lastTime) < poemGenerationCooldown {
-            print("⏳ Poetry: Cooldown active, skipping generation")
-            return
-        }
-        
-        // Generate poem line with full context
-        generatePoemLine(triggerWord: word, context: arManager.getCurrentContext())
+        selectedWordBuffer.append(word)
+        resetDebounceTimer()
     }
     
-    /// Called when user uncaptures a word
     func uncaptureWord(_ word: String) {
-        print("📝 Poetry: Released '\(word)'")
-        // We don't remove poem lines, they stay as part of the river
+        // Optional: remove from buffer if deselected within window?
+        // keeping simple: just append selections
     }
     
-    // MARK: - Poem Generation
+    private func resetDebounceTimer() {
+        debounceTimer?.invalidate()
+        debounceTimer = Timer.scheduledTimer(withTimeInterval: debounceInterval, repeats: false) { [weak self] _ in
+            self?.tryTriggerGeneration()
+        }
+    }
     
-    private func generatePoemLine(triggerWord: String, context: PoeticSessionContext) {
-        lastPoemGenerationTime = Date()
+    private func tryTriggerGeneration() {
+        // Don't interrupt typing. If typing, wait until done (handled by completion of typing)
+        guard let manager = arManager, !selectedWordBuffer.isEmpty else { return }
         
-        // Prepare context with current poem lines
-        var fullContext = context
-        fullContext.poemLines = poemLines.map { $0.text }
+        if isTyping || isGenerating {
+            // Re-schedule check
+            print("⏳ Still typing/generating, queueing request...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.tryTriggerGeneration()
+            }
+            return
+        }
         
-        print("🎭 Generating poem...")
-        print("   Anchors: \(fullContext.activeAnchors)")
-        print("   Objects: \(fullContext.formatObjectSequence())")
-        print("   Visual: \(fullContext.latestVisualDescription ?? "none")")
-        print("   History: \(fullContext.formatSelectionHistory())")
+        generate(manager: manager)
+    }
+    
+    private func generate(manager: ARManager) {
+        isGenerating = true
+        let triggers = selectedWordBuffer
+        selectedWordBuffer.removeAll()
         
-        llmService.generate(mode: .generatePoem(context: fullContext))
+        print("🧠 Generating poem for: \(triggers)")
+        
+        var context = manager.getCurrentContext()
+        context.activeAnchors = triggers
+        context.poemLines = poemLines.map { $0.text }
+        
+        llmService.generate(mode: .generatePoem(context: context))
+            .compactMap { $0 as? String }
             .receive(on: DispatchQueue.main)
-            .sink(receiveCompletion: { completion in
-                if case .failure(let error) = completion {
-                    print("❌ Poetry generation error: \(error)")
-                }
+            .sink(receiveCompletion: { [weak self] _ in
+                self?.isGenerating = false
             }, receiveValue: { [weak self] line in
-                guard let self = self else { return }
-                
-                let cleanLine = self.cleanPoemLine(line)
-                print("🎭 Generated: '\(cleanLine)'")
-                
-                // Show with typewriter effect
-                self.addPoemLineWithTypewriter(cleanLine, triggerWord: triggerWord)
-                
-                // Update ARManager's context
-                self.arManager?.addPoemLine(cleanLine)
+                self?.typewrite(line, trigger: triggers.last)
+                self?.arManager?.addPoemLine(line)
             })
             .store(in: &cancellables)
     }
     
-    private func cleanPoemLine(_ line: String) -> String {
-        return line
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "\u{201C}", with: "") // Left double quote
-            .replacingOccurrences(of: "\u{201D}", with: "") // Right double quote
-            .replacingOccurrences(of: "「", with: "")
-            .replacingOccurrences(of: "」", with: "")
-    }
-    
-    // MARK: - Typewriter Effect
-    
-    private func addPoemLineWithTypewriter(_ text: String, triggerWord: String?) {
-        guard !text.isEmpty else { return }
-        
-        // Stop any existing typing
+    private func typewrite(_ text: String, trigger: String?) {
+        let clean = text.replacingOccurrences(of: "/", with: ",")
         typingTimer?.invalidate()
+        
+        // Move any justCompleted line to history before starting new one
+        if !justCompletedText.isEmpty {
+            // This will be handled in the view with animation
+        }
+        
         isTyping = true
         currentTypingText = ""
+        justCompletedText = "" // Clear any previous just-completed line
         
-        let characters = Array(text)
-        var index = 0
+        let chars = Array(clean)
+        var idx = 0
         
-        // Typewriter: one character every 80ms
-        typingTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
-                return
-            }
-            
-            if index < characters.count {
-                self.currentTypingText += String(characters[index])
-                index += 1
+        typingTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] t in
+            guard let self = self else { return }
+            if idx < chars.count {
+                self.currentTypingText.append(chars[idx])
+                idx += 1
             } else {
-                timer.invalidate()
-                self.finishTyping(text: text, triggerWord: triggerWord)
+                t.invalidate()
+                self.isTyping = false
+                
+                // Keep as "just completed" - don't add to history yet
+                self.justCompletedText = clean
+                self.currentTypingText = ""
+                
+                // Add to poemLines (for LLM context) but view will show it as justCompleted
+                self.poemLines.append(PoemLine(text: clean, timestamp: Date(), triggerWord: trigger))
+                if self.poemLines.count > AppConfig.maxPoemLineHistory { self.poemLines.removeFirst() }
+                
+                // Clear selected words after poem line is complete
+                self.arManager?.clearSelectedWords()
+                self.arManager?.addPoemLine(clean)
+                
+                // Check if more words were buffered while typing
+                if !self.selectedWordBuffer.isEmpty {
+                    self.tryTriggerGeneration()
+                }
             }
         }
-    }
-    
-    private func finishTyping(text: String, triggerWord: String?) {
-        isTyping = false
-        
-        // Add to poem lines
-        let newLine = PoemLine(text: text, timestamp: Date(), triggerWord: triggerWord)
-        poemLines.append(newLine)
-        
-        // Clear typing text
-        currentTypingText = ""
-        
-        print("🖋️ Line added: '\(text)'")
-        
-        // Keep only last 6 lines visible
-        if poemLines.count > 6 {
-            poemLines.removeFirst()
-        }
-    }
-    
-    // MARK: - Clear
-    
-    func clearPoem() {
-        poemLines.removeAll()
-        currentTypingText = ""
-        typingTimer?.invalidate()
-        isTyping = false
-        lastPoemGenerationTime = nil
     }
 }

@@ -5,17 +5,6 @@ struct RecordButtonView: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            // Recording duration (录制时长显示保持不变)
-            if recorder.isRecording {
-                Text(formatDuration(recorder.recordingDuration))
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
-                    .foregroundColor(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .background(Color.black.opacity(0.6))
-                    .cornerRadius(4)
-            }
-            
             // Record button
             Button(action: {
                 if recorder.isRecording {
@@ -42,19 +31,9 @@ struct RecordButtonView: View {
             }
             // 按钮整体的动画效果
             .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
-            
-            // Label (文字标签依然变化，提示用户当前操作)
-            Text(recorder.isRecording ? "stop" : "start")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.white.opacity(0.8))
         }
     }
     
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
 }
 
 struct RecordButtonView_Previews: PreviewProvider {

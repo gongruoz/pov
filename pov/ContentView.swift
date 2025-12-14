@@ -1,50 +1,63 @@
 import SwiftUI
 
-// MARK: - 0. Film Grain Overlay (Delicate & Visible)
-// 全屏胶片噪点层：参数微调，增加一点点存在感
+// MARK: - 0. Film Grain Overlay (Static Image - High Performance)
 struct FilmGrainOverlay: View {
-    // 修改 1：强度稍微提高 (0.035 -> 0.06)，让它更容易被察觉
-    private let intensity: Double = 0.06
+    @State private var grainImage: UIImage?
     
     var body: some View {
         GeometryReader { proxy in
-            Canvas { context, size in
-                // 保持高密度
-                let particleCount = Int(min(size.width * size.height * 0.5, 150000))
-                
-                var whitePath = Path()
-                var blackPath = Path()
-                
-                // 修改 2：尺寸稍微加大一点点 (0.35 -> 0.5)，保证在不同屏幕上的可见性
-                let particleSize: CGFloat = 0.5
-                
-                for _ in 0..<particleCount {
-                    let x = Double.random(in: 0...size.width)
-                    let y = Double.random(in: 0...size.height)
-                    let rect = CGRect(x: x, y: y, width: particleSize, height: particleSize)
-                    
-                    if Bool.random() {
-                        whitePath.addRect(rect)
-                    } else {
-                        blackPath.addRect(rect)
+            ZStack {
+                if let image = grainImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .blendMode(.overlay)
+                        .allowsHitTesting(false)
+                } else {
+                    Color.clear
+                }
+            }
+            .onAppear {
+                if grainImage == nil {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let generated = generateStaticGrain(size: proxy.size)
+                        DispatchQueue.main.async {
+                            self.grainImage = generated
+                        }
                     }
                 }
-                
-                context.fill(whitePath, with: .color(.white.opacity(intensity)))
-                context.fill(blackPath, with: .color(.black.opacity(intensity)))
             }
         }
-        // 保持 Overlay 混合模式
-        .blendMode(.overlay)
-        .allowsHitTesting(false)
         .edgesIgnoringSafeArea(.all)
+    }
+    
+    private func generateStaticGrain(size: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { context in
+            let cgContext = context.cgContext
+            let intensity: Double = 0.12
+            let particleCount = Int(min(size.width * size.height * 0.2, 80000))
+            let particleSize: CGFloat = 0.5
+            
+            let whiteColor = UIColor.white.withAlphaComponent(intensity).cgColor
+            let blackColor = UIColor.black.withAlphaComponent(intensity).cgColor
+            
+            for _ in 0..<particleCount {
+                let x = Double.random(in: 0...size.width)
+                let y = Double.random(in: 0...size.height)
+                let rect = CGRect(x: x, y: y, width: particleSize, height: particleSize)
+                
+                cgContext.setFillColor(Bool.random() ? whiteColor : blackColor)
+                cgContext.fill(rect)
+            }
+        }
     }
 }
 
-// MARK: - 1. Independent Ambient Dust (Sparse, Tiny, Bright)
+// MARK: - 1. Ambient Dust Layer
 struct AmbientDustLayer: View {
-    // 修改 3：数量减少 (45 -> 25)，让画面不拥挤
-    private let particleCount = 25
+    private let particleCount = 35
     
     var body: some View {
         GeometryReader { geometry in
@@ -62,55 +75,38 @@ struct AmbientDustLayer: View {
 
 struct DustMote: View {
     @State private var opacity: Double = 0.0
-    @State private var scale: CGFloat = Double.random(in: 0.2...0.5)
+    @State private var scale: CGFloat = 0.3
     @State private var offsetX: CGFloat = 0.0
     @State private var offsetY: CGFloat = 0.0
     
-    // --- 随机化的生命周期参数 ---
+    // Slow down movement and fade
     private let targetScale = CGFloat.random(in: 0.8...1.4)
-    // 保持高亮度
     private let maxOpacity = Double.random(in: 0.8...1.0)
-    private let duration = Double.random(in: 4.0...12.0)
-    private let floatDuration = Double.random(in: 10.0...20.0)
-    private let delay = Double.random(in: 0.0...10.0)
+    private let duration = Double.random(in: 4.0...7.0) // Slower fade in/out
+    private let floatDuration = Double.random(in: 8.0...14.0) // Slower movement
+    private let delay = Double.random(in: 0.0...3.0) // Shorter delay
     
-    // 修改 4：基础尺寸整体缩小 (1.5~3.0 -> 1.0~2.0)，变成细小的光点
-    private let baseSize: CGFloat = CGFloat.random(in: 0.8...1.5)
+    private let baseSize: CGFloat = CGFloat.random(in: 0.5...0.8)
     private let widthRatio: CGFloat = Double.random(in: 0.8...1.2)
     private let heightRatio: CGFloat = Double.random(in: 0.8...1.2)
     
     var body: some View {
-        // 不规则矩形碎片
         Rectangle()
             .fill(Color.white)
             .frame(width: baseSize * widthRatio, height: baseSize * heightRatio)
-            // 保持刺眼的光晕感
             .shadow(color: .white.opacity(1.0), radius: 1.5)
             .scaleEffect(scale)
-            // 随机旋转
             .rotationEffect(Angle(degrees: Double.random(in: 0...360)))
             .opacity(opacity)
-            // 随机漂浮位移
             .offset(x: offsetX, y: offsetY)
             .onAppear {
-                // 1. 呼吸动画
-                withAnimation(
-                    .easeInOut(duration: duration)
-                    .repeatForever(autoreverses: true)
-                    .delay(delay)
-                ) {
+                withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: true).delay(delay)) {
                     opacity = maxOpacity
                     scale = targetScale
                 }
-                
-                // 2. 漂浮动画
-                withAnimation(
-                    .easeInOut(duration: floatDuration)
-                    .repeatForever(autoreverses: true)
-                    .delay(Double.random(in: 0...5.0))
-                ) {
-                    offsetX = CGFloat.random(in: -70...70)
-                    offsetY = CGFloat.random(in: -70...70)
+                withAnimation(.easeInOut(duration: floatDuration).repeatForever(autoreverses: true).delay(Double.random(in: 0...2.0))) {
+                    offsetX = CGFloat.random(in: -50...50) // Reduced movement range slightly for slower feel
+                    offsetY = CGFloat.random(in: -50...50)
                 }
             }
     }
@@ -119,46 +115,34 @@ struct DustMote: View {
 // MARK: - 2. Content View (Main)
 struct ContentView: View {
     @StateObject var arViewModel = ARViewModel()
+    @State private var showTapToast = false
+    @State private var hasShownTapToast = false
     
     var body: some View {
         ZStack {
-            // Camera View
+            // Camera Layer
             ARViewContainer(arManager: arViewModel.arManager)
                 .edgesIgnoringSafeArea(.all)
                 .overlay(
                     ZStack {
-                        // 1. 胶片噪点层 (最底层，细腻底纹)
+                        // 1. Texture Layers
                         FilmGrainOverlay()
-                        
-                        // 2. 环境尘埃 (稀疏、细小、明亮、漂浮)
                         AmbientDustLayer()
                         
-                        // 3. 悬浮文字层
+                        // 2. Floating Words Layer
                         GeometryReader { geometry in
                             ZStack {
-                                // Render Floating Words (candidates/unselected)
                                 ForEach(arViewModel.arManager.floatingWords) { word in
                                     FloatingWordView(
                                         word: word,
-                                        isSelected: false,
                                         geometry: geometry
                                     )
                                     .onTapGesture {
-                                        arViewModel.arManager.triggerHaptic()
-                                        arViewModel.arManager.toggleWordSelection(word.id)
-                                    }
-                                }
-                                
-                                // Render Kept Words (selected/anchors)
-                                ForEach(arViewModel.arManager.keptWords) { word in
-                                    FloatingWordView(
-                                        word: word,
-                                        isSelected: true,
-                                        geometry: geometry
-                                    )
-                                    .onTapGesture {
-                                        arViewModel.arManager.triggerHaptic()
-                                        arViewModel.arManager.toggleWordSelection(word.id)
+                                        let isNowSelected = arViewModel.arManager.toggleWordSelection(word.id)
+                                        // Only capture word when selecting, not deselecting
+                                        if isNowSelected {
+                                            arViewModel.poetryViewModel.captureWord(word.text)
+                                        }
                                     }
                                 }
                             }
@@ -166,170 +150,183 @@ struct ContentView: View {
                     }
                 )
             
-            // UI Overlay
+            // UI Overlay (HUD)
             VStack {
-                // Top: Recording indicator
-                HStack {
-                    if arViewModel.recorderService.isRecording {
-                        RecordingIndicator(duration: arViewModel.recorderService.recordingDuration)
+                // Top: Unified Status Indicator (Recording / Saved) + Tap Toast
+                ZStack {
+                    HStack {
+                        if arViewModel.recorderService.isRecording {
+                            StatusIndicator(state: .recording(arViewModel.recorderService.recordingDuration))
+                        } else if arViewModel.showSavedToast {
+                            StatusIndicator(state: .saved)
+                                .transition(.opacity)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    
+                    // Tap Toast (Centered) - Shows once when first words appear
+                    if showTapToast {
+                        Text("tap tap :)")
+                            .font(.custom("Handjet-Regular", size: 12))
+                            .kerning(2.1)
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.7))
+                            .cornerRadius(16)
+                            .transition(.opacity)
+                    }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 60)
+                .padding(.top, 20)
+                .animation(.easeInOut, value: arViewModel.recorderService.isRecording)
+                .animation(.easeInOut, value: arViewModel.showSavedToast)
                 
                 Spacer()
                 
-                // Bottom: Poetry Overlay
-                PoetryOverlayView(viewModel: arViewModel.poetryViewModel)
-                
-                // Record Button
-                HStack {
-                    Spacer()
-                    RecordButtonView(recorder: arViewModel.recorderService)
-                    Spacer()
+                // Bottom: Poetry & Controls
+                VStack(spacing: 20) {
+                    PoetryOverlayView(viewModel: arViewModel.poetryViewModel)
+                    
+                    HStack {
+                        Spacer()
+                        RecordButtonView(recorder: arViewModel.recorderService)
+                        Spacer()
+                    }
                 }
                 .padding(.bottom, 40)
             }
-            
-            // Toast
-            if arViewModel.showSavedToast {
-                SavedToast()
-            }
         }
         .statusBar(hidden: true)
+        .onAppear {
+            // Show toast once when first floating words appear
+            arViewModel.arManager.onFirstWordsAppeared = {
+                guard !hasShownTapToast else { return }
+                hasShownTapToast = true
+                withAnimation(.easeIn(duration: 0.3)) {
+                    showTapToast = true
+                }
+                // Auto hide after 5s
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    withAnimation(.easeOut(duration: 0.5)) {
+                        showTapToast = false
+                    }
+                }
+            }
+        }
     }
 }
 
 // MARK: - 3. Floating Word View
 struct FloatingWordView: View {
     let word: FloatingWord
-    let isSelected: Bool
     let geometry: GeometryProxy
     
-    // 文字光晕呼吸
-    @State private var isTextGlowBreathing = false
-    // 微弱浮动偏移量
+    @State private var glowIntensity: Double = 0.5
     @State private var floatingOffset: CGFloat = 0.0
     
     var body: some View {
-        let fontSize: CGFloat = isSelected ? 20 : 18
+        // Highlighting Logic - use Handjet-Regular for selected words
+        let fontSize: CGFloat = 18
+        let fontName = word.isSelected ? "Handjet-Regular" : "Handjet-ExtraLight"
         let kerningValue = fontSize * 0.15
         
         Text(word.text)
-            .font(.custom("Handjet-Light", size: fontSize))
+            .font(.custom(fontName, size: fontSize))
             .kerning(kerningValue)
             .foregroundColor(.white)
-            .padding(.horizontal, isSelected ? 12 : 8)
-            .padding(.vertical, isSelected ? 6 : 4)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .contentShape(RoundedRectangle(cornerRadius: 8))
             
-            // --- 😇 天使圣光效果 (Angelic Holy Glow) ---
-            
-            // 层级 1：核心勾勒 (High Definition)
-            // 保证文字本身在强光下依然清晰锐利
+            // Holy Glow with breathing animation
             .shadow(color: .white, radius: 1)
-            
-            // 层级 2：近处绒毛感 (Fuzzy/Furry)
-            // 这一层制造“毛茸茸”的边缘，不透明度要高
-            .shadow(color: .white.opacity(0.8), radius: 6)
-            
-            // 层级 3：中距离辉光 (Bloom)
-            // 这一层制造光晕的主体，让文字看起来在发光
-            .shadow(color: .white.opacity(0.6), radius: 15)
-            
-            // 层级 4：大气的呼吸光环 (Atmospheric Aura)
-            // 半径极大，随呼吸闪烁，制造神圣感
+            .shadow(color: .white.opacity(0.9), radius: word.isSelected ? 10 : 6)
+            .shadow(color: .white.opacity(0.7), radius: word.isSelected ? 25 : 15)
             .shadow(
-                // 呼吸时最亮可达 1.0 (纯白)，暗时也有 0.5
-                color: Color.white.opacity(isTextGlowBreathing ? 1.0 : 0.5),
-                // 半径拉得非常大 (30-50)，制造柔和的散射
-                radius: isTextGlowBreathing ? 50 : 30
+                color: Color.white.opacity(glowIntensity),
+                radius: glowIntensity * (word.isSelected ? 70 : 55)
             )
             
-            // --- 核心动画逻辑 (保持之前的 Linear & Subtle) ---
-            
+            // Animations
             .scaleEffect(word.scale)
-            .opacity(word.opacity)
-            .animation(.easeOut(duration: 0.2), value: word.opacity)
-            .animation(.linear(duration: 0.2), value: word.scale)
-
+            // Opacity: selected = 1, fading out = use word.opacity with linear, normal = word.opacity
+            .opacity(word.isSelected ? 1.0 : word.opacity)
             .offset(y: floatingOffset)
-            
             .position(
                 x: word.position.x * geometry.size.width,
                 y: word.position.y * geometry.size.height
             )
+            // Smooth transition for selection
+            .animation(.easeInOut(duration: 0.3), value: word.isSelected)
+            // No animation for position update to prevent lag
             .animation(nil, value: word.position)
-            .animation(.easeInOut(duration: 0.2), value: isSelected)
+            // Linear fade for opacity (especially important for fading out words)
+            .animation(.linear(duration: 0.1), value: word.opacity)
+            // Linear fade when becoming unselected (fading out)
+            .animation(.linear(duration: 1.5), value: word.isFadingOut)
             
             .onAppear {
-                // 呼吸动画：稍微加快一点频率，配合圣光闪烁
-                withAnimation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
-                    isTextGlowBreathing.toggle()
-                }
-                
-                let randomDelay = Double.random(in: 0...2.0)
+                // Breathing glow animation - continuous subtle pulse
                 withAnimation(
-                    .easeInOut(duration: Double.random(in: 4.0...6.0))
+                    .easeInOut(duration: 2.5)
                     .repeatForever(autoreverses: true)
-                    .delay(randomDelay)
                 ) {
+                    glowIntensity = 1.0
+                }
+                let randomDelay = Double.random(in: 0...2.0)
+                withAnimation(.easeInOut(duration: Double.random(in: 4.0...6.0)).repeatForever(autoreverses: true).delay(randomDelay)) {
                     floatingOffset = CGFloat.random(in: -1.5...1.5)
                 }
             }
     }
 }
 
-// MARK: - 4. Helper Views (Kerned)
-struct RecordingIndicator: View {
-    let duration: TimeInterval
+// MARK: - 4. Unified Status Indicator
+enum StatusState {
+    case recording(TimeInterval)
+    case saved
+}
+
+struct StatusIndicator: View {
+    let state: StatusState
     
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(Color.red)
-                .frame(width: 10, height: 10)
-            Text(formatDuration(duration))
-                .font(.custom("Handjet-Regular", size: 14))
-                // Kerning 15%
+            if case .recording = state {
+                // Recording Dot (Cutout)
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: 10, height: 10)
+                    .blendMode(.destinationOut)
+            }
+            
+            // Text (Cutout)
+            Text(statusText)
+                .font(.custom("Handjet-Regular", size: 12))
                 .kerning(2.1)
+                .foregroundColor(.black)
+                .blendMode(.destinationOut)
         }
-        .foregroundColor(.white)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color.black.opacity(0.4))
+        .background(Color.white.opacity(0.7))
+        .compositingGroup() // Ensures cutout applies to the white background
         .cornerRadius(16)
+    }
+    
+    private var statusText: String {
+        switch state {
+        case .recording(let duration):
+            return formatDuration(duration)
+        case .saved:
+            return "saved :)"
+        }
     }
     
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%02d:%02d", minutes, seconds)
-    }
-}
-
-struct SavedToast: View {
-    var body: some View {
-        GeometryReader { geo in
-            VStack {
-                Spacer().frame(height: geo.size.height * 0.15)
-                HStack {
-                    Spacer()
-                    Text("saved :)")
-                        .font(.custom("Handjet-Regular", size: 16))
-                        // Kerning 15%
-                        .kerning(2.4)
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background(Color.black.opacity(0.6))
-                        .cornerRadius(14)
-                    Spacer()
-                }
-                Spacer()
-            }
-            .transition(.opacity)
-        }
     }
 }

@@ -1,24 +1,7 @@
 import Foundation
-import UIKit
+import CoreGraphics
 
-// MARK: - Object Detection (Fast Stream)
-
-/// A single object detected by the local ML model
-struct ObjectDetection: Identifiable, Codable {
-    let id: UUID
-    let label: String
-    let confidence: Float
-    let timestamp: Date
-    
-    init(label: String, confidence: Float, timestamp: Date = Date()) {
-        self.id = UUID()
-        self.label = label
-        self.confidence = confidence
-        self.timestamp = timestamp
-    }
-}
-
-// MARK: - Visual Context (Slow Stream)
+// MARK: - Visual Context (Vision Stream)
 
 /// A visual description captured from the scene
 struct VisualContext: Identifiable, Codable {
@@ -35,7 +18,7 @@ struct VisualContext: Identifiable, Codable {
 
 // MARK: - User Selection Event
 
-/// Tracks when user selects/deselects a word - captures intent over time
+/// Tracks when user selects/deselects a word
 struct SelectionEvent: Identifiable, Codable {
     let id: UUID
     let word: String
@@ -59,13 +42,12 @@ struct SelectionEvent: Identifiable, Codable {
 
 /// Aggregates all context for poetry generation
 struct PoeticSessionContext {
-    /// Time-ordered sequence of detected objects (Fast Stream)
-    var objectSequence: [ObjectDetection] = []
+    // REMOVED: objectSequence (CoreML legacy)
     
     /// Time-ordered visual descriptions (Slow Stream)
     var visualContexts: [VisualContext] = []
     
-    /// User's selection history - reveals intent patterns
+    /// User's selection history
     var selectionHistory: [SelectionEvent] = []
     
     /// Currently selected words (active anchors)
@@ -76,19 +58,9 @@ struct PoeticSessionContext {
     
     // MARK: - Computed Properties
     
-    /// Recent objects for prompt context (last 10)
-    var recentObjects: [String] {
-        objectSequence.suffix(10).map { $0.label }
-    }
-    
     /// Latest visual description
     var latestVisualDescription: String? {
         visualContexts.last?.description
-    }
-    
-    /// Words selected by user (shows intent pattern)
-    var selectedWords: [String] {
-        selectionHistory.filter { $0.action == .selected }.map { $0.word }
     }
     
     /// Recent poem lines for continuity (last 3)
@@ -97,11 +69,6 @@ struct PoeticSessionContext {
     }
     
     // MARK: - Formatting for Prompts
-    
-    /// Format object sequence as comma-separated string
-    func formatObjectSequence() -> String {
-        recentObjects.joined(separator: ", ")
-    }
     
     /// Format selection history showing user's choices
     func formatSelectionHistory() -> String {
@@ -114,22 +81,24 @@ struct PoeticSessionContext {
     
     /// Format poem history for continuity
     func formatPoemHistory() -> String {
-        recentPoemLines.joined(separator: "\n")
+        return recentPoemLines.joined(separator: "\n")
     }
 }
 
-// MARK: - Floating Word with Source Context
+// MARK: - Floating Word
 
-/// Enhanced floating word with generation context
 struct FloatingWord: Identifiable {
     let id: UUID
     let text: String
     var position: CGPoint // Normalized coordinates (0-1)
-    var opacity: Double = 0.0 // Start invisible for fade in
-    var scale: Double = 0.5   // Start small
+    var opacity: Double = 0.0
+    var scale: Double = 0.5
     var createdAt: Date = Date()
+    var isSelected: Bool = false // Selected/fixed state
+    var isFadingOut: Bool = false // Marked for slow fade removal
+    var fadeOutStartTime: Date? = nil // When fade out started
     
-    /// The source that triggered this word (object label or visual description)
+    /// The source that triggered this word (usually "vision")
     let sourceContext: String?
     
     init(text: String, position: CGPoint, sourceContext: String? = nil) {
@@ -139,3 +108,4 @@ struct FloatingWord: Identifiable {
         self.sourceContext = sourceContext
     }
 }
+
