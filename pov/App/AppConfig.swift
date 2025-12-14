@@ -20,7 +20,7 @@ struct AppConfig {
     static let floatingWordMaxY: Double = 0.65
     
     // LLM Config (Qwen)
-    static let apiKey = "sk-ihovlhiteedbgmxwgsrstyozjimjymhyqmljjxagovyhsmsk"
+    static let apiKey = Secrets.apiKey
     static let apiBaseURL = "https://api.siliconflow.cn/v1/chat/completions"
     static let modelName = "Qwen/Qwen3-VL-30B-A3B-Instruct" 
     

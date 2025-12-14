@@ -112,15 +112,15 @@ class LLMService {
             - Inspiration: \(anchors)
             
             [INSTRUCTION]
-            Write a poetic line. MAXIMUM 7 WORDS. Count carefully.
+            Write a poetic line. MAXIMUM 10 WORDS. Count carefully.
             Inspired by the input words.
-            Style: Personal, intimate, sensorial.
+            Style: intimate, sensorial, whimsical, experimental, intuitive, inquisitive, poetic, not cliche. surprising.
             
             [FORBIDDEN]
             - No dashes (—, -, –)
             - No quotes
             - No explanations
-            - No more than 7 words
+            - No more than 10 words
             
             Output ONLY the line.
             """
@@ -137,16 +137,16 @@ class LLMService {
             - Inspiration: \(anchors)
             
             [INSTRUCTION]
-            Write ONE new line. MAXIMUM 7 WORDS. Count carefully.
+            Write ONE new line. MAXIMUM 10 WORDS. Count carefully.
             Inspired by the input words.
-            Style: Personal, intimate, sensorial, whimsical.
+            Style: intimate, sensorial, whimsical, experimental, intuitive, inquisitive, poetic, not cliche. surprising.
             Maintain the rhythm.
             
             [FORBIDDEN]
             - No dashes (—, -, –)
             - No quotes
             - No explanations
-            - No more than 7 words
+            - No more than 10 words
             
             Output ONLY the line.
             """
@@ -193,11 +193,6 @@ class LLMService {
                     .replacingOccurrences(of: "  ", with: " ")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 
-                // Truncate to ~7 words if too long
-                let words = clean.split(separator: " ")
-                if words.count > 9 {
-                    clean = words.prefix(7).joined(separator: " ")
-                }
                 return clean
             }
             .eraseToAnyPublisher()
