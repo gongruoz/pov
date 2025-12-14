@@ -121,8 +121,11 @@ class PoetryViewModel: ObservableObject {
                 self.arManager?.addPoemLine(clean)
                 
                 // Check if more words were buffered while typing
+                // Add delay so user can see the just-completed line before next starts
                 if !self.selectedWordBuffer.isEmpty {
-                    self.tryTriggerGeneration()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        self?.tryTriggerGeneration()
+                    }
                 }
             }
         }
